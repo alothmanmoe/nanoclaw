@@ -33,7 +33,7 @@ import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
-import { markWake, recordEvent } from './perf-metrics.js';
+import { clearWakeMark, markWake, recordEvent } from './perf-metrics.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
@@ -59,6 +59,15 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
 
 /**
+ * Synchronous reservations, keyed by session id. Holds a slot from the
+ * instant the capacity gate passes until the spawn promise settles (at which
+ * point the real `activeContainers` entry takes over). Without this, two
+ * `wakeContainer` calls for DIFFERENT sessions in the same tick can both
+ * pass the gate at size=MAX-1 and launch one container too many.
+ */
+const reservations = new Set<string>();
+
+/**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
  * `wakeContainer` calls while the first spawn is still mid-setup (async
  * buildContainerArgs, OneCLI gateway apply, etc.) — otherwise a second
@@ -75,6 +84,7 @@ export function getActiveContainerCount(): number {
 /** Test-only: seed the active-container map to simulate N running containers. */
 export function __setActiveForTest(ids: string[]): void {
   activeContainers.clear();
+  reservations.clear();
   for (const id of ids) activeContainers.set(id, { process: null as never, containerName: id });
 }
 
@@ -108,10 +118,10 @@ export function wakeContainer(session: Session): Promise<boolean> {
     return existing;
   }
 
-  // Capacity gate: at the cap, defer. The inbound row stays pending and
-  // host-sweep re-wakes on its next tick (same path as a transient spawn
-  // failure). This is the system's backpressure — no new queue is introduced.
-  if (activeContainers.size >= MAX_CONCURRENT_CONTAINERS) {
+  // Capacity gate: counts both running containers AND in-flight reservations so
+  // the cap is hard against concurrent cross-session arrivals in the same tick.
+  // Without reservations, two calls at size=MAX-1 both pass and launch an 11th.
+  if (activeContainers.size + reservations.size >= MAX_CONCURRENT_CONTAINERS) {
     recordEvent('slot_wait', { sessionId: session.id, active: activeContainers.size });
     log.debug('At container capacity — deferring wake', {
       sessionId: session.id,
@@ -121,6 +131,10 @@ export function wakeContainer(session: Session): Promise<boolean> {
     return Promise.resolve(false);
   }
 
+  // Reserve the slot synchronously before any async work so a concurrent call
+  // in the same tick sees the updated count and is correctly deferred.
+  reservations.add(session.id);
+
   const promise = spawnContainer(session)
     .then(() => true)
     .catch((err) => {
@@ -128,6 +142,7 @@ export function wakeContainer(session: Session): Promise<boolean> {
       return false;
     })
     .finally(() => {
+      reservations.delete(session.id);
       wakePromises.delete(session.id);
     });
   wakePromises.set(session.id, promise);
@@ -219,6 +234,7 @@ async function spawnContainer(session: Session): Promise<void> {
   container.on('close', (code) => {
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
+    clearWakeMark(session.id);
     stopTypingRefresh(session.id);
     // code null = killed by signal (normal shutdown path), not a boot failure.
     if (code !== 0 && code !== null && stderrTail.length > 0) {
@@ -231,6 +247,7 @@ async function spawnContainer(session: Session): Promise<void> {
   container.on('error', (err) => {
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
+    clearWakeMark(session.id);
     stopTypingRefresh(session.id);
     log.error('Container spawn error', { sessionId: session.id, err });
   });

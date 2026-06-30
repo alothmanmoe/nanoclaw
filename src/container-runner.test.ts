@@ -80,6 +80,21 @@ describe('wakeContainer capacity gate', () => {
     expect(spawned).toBe(true);
     expect(getAgentGroup).toHaveBeenCalled();
   });
+
+  it('synchronous reservation blocks the last slot for a concurrent same-tick caller', async () => {
+    // Seed MAX-1 running containers so exactly one slot remains.
+    __setActiveForTest(Array.from({ length: MAX_CONCURRENT_CONTAINERS - 1 }, (_, i) => `running-${i}`));
+
+    // Call A claims the last slot synchronously (before any await inside spawnContainer).
+    const pA = wakeContainer(makeSession('res-a'));
+    // Call B arrives in the same tick — the reservation must already be counted.
+    const pB = wakeContainer(makeSession('res-b'));
+
+    // B is deferred because A's reservation filled the slot.
+    expect(await pB).toBe(false);
+    // A passed the gate; spawnContainer early-returns (getAgentGroup → null).
+    expect(await pA).toBe(true);
+  });
 });
 
 describe('buildContainerArgs ordering invariant (structural)', () => {
