@@ -44,6 +44,23 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(1, parseInt(process.env.MAX_CO
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || '';
 export const CONTAINER_MEMORY_LIMIT = process.env.CONTAINER_MEMORY_LIMIT || '';
 
+/**
+ * Parse a positive-integer env override, falling back to a default.
+ * Empty, zero, negative, and non-numeric values fall back — so an unset or
+ * malformed env var never changes today's behavior.
+ */
+export function parseIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// Loop intervals (ms). Defaults preserve pre-tuning behavior.
+export const ACTIVE_POLL_MS = parseIntEnv('ACTIVE_POLL_MS', 1000);
+export const SWEEP_POLL_MS = parseIntEnv('SWEEP_POLL_MS', 60_000);
+export const SWEEP_INTERVAL_MS = parseIntEnv('SWEEP_INTERVAL_MS', 60_000);
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
