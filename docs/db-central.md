@@ -19,12 +19,12 @@ CREATE TABLE agent_groups (
   folder                TEXT NOT NULL UNIQUE,
   agent_provider        TEXT,
   created_at            TEXT NOT NULL,
-  parent_agent_group_id TEXT REFERENCES agent_groups(id),
+  parent_agent_group_id TEXT,
   lifetime              TEXT NOT NULL DEFAULT 'persistent'
 );
 ```
 
-- `parent_agent_group_id`: NULL for operator-created (root) groups; set to the creating agent's group ID for agent-spawned groups. Forms the ownership tree used for subtree-bounded teardown authorization.
+- `parent_agent_group_id`: Plain nullable indexed `TEXT` column (no FK). NULL = tree root (operator-created group); non-NULL = the creating agent's group ID. Teardown is managed in application logic (deepest-first), so no DB cascade is used. Forms the ownership tree for subtree-bounded teardown authorization.
 - `lifetime`: `'persistent'` (default; existing rows backfilled) or `'task'`. Task agents self-reap via `finish_task` and count toward the `MAX_MANAGED_AGENTS` fleet cap; persistent agents do not.
 - Added by migration `019-agent-fleet-ownership`.
 - **Readers:** `src/session-manager.ts`, `src/delivery.ts`, `src/router.ts`

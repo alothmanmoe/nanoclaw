@@ -20,7 +20,7 @@ const mockInitGroupFilesystem = vi.fn();
 const mockUpdateScalars = vi.fn();
 const mockWriteDestinations = vi.fn();
 const mockNotifyWrite = vi.fn();
-const mockCountLiveTaskAgents = vi.fn(() => 0);
+const mockCountManagedAgents = vi.fn(() => 0);
 
 vi.mock('../approvals/index.js', () => ({
   requestApproval: (...a: unknown[]) => mockRequestApproval(...a),
@@ -34,7 +34,7 @@ vi.mock('../../db/agent-groups.js', () => ({
   getAgentGroup: (id: string) => ({ id, name: id.toUpperCase(), folder: id, agent_provider: null, created_at: '' }),
   getAgentGroupByFolder: () => undefined,
   createAgentGroup: (...a: unknown[]) => mockCreateAgentGroup(...a),
-  countLiveTaskAgents: () => mockCountLiveTaskAgents(),
+  countManagedAgents: () => mockCountManagedAgents(),
 }));
 vi.mock('../../group-init.js', () => ({
   initGroupFilesystem: (...a: unknown[]) => mockInitGroupFilesystem(...a),
@@ -64,7 +64,7 @@ const SESSION = { id: 'sess-1', agent_group_id: 'ag-1' } as Session;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockCountLiveTaskAgents.mockReturnValue(0);
+  mockCountManagedAgents.mockReturnValue(0);
 });
 
 afterEach(() => {
@@ -162,7 +162,7 @@ describe('handleCreateAgent — no approval gate', () => {
 
   it('fleet cap: rejects without creating', async () => {
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
-    mockCountLiveTaskAgents.mockReturnValue(100);
+    mockCountManagedAgents.mockReturnValue(100);
 
     await handleCreateAgent({ name: 'Scout' }, SESSION);
 

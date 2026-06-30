@@ -55,8 +55,10 @@ export function deleteAgentGroup(id: string): void {
   getDb().prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
 }
 
-/** Count of live agent groups with lifetime='task' — the fleet-cap denominator. */
-export function countLiveTaskAgents(): number {
-  const row = getDb().prepare("SELECT COUNT(*) AS n FROM agent_groups WHERE lifetime = 'task'").get() as { n: number };
+/** Count of live spawned agent groups (any agent with a parent) — the fleet-cap denominator. */
+export function countManagedAgents(): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM agent_groups WHERE parent_agent_group_id IS NOT NULL')
+    .get() as { n: number };
   return row.n;
 }

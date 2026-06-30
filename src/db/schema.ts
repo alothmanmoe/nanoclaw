@@ -13,7 +13,9 @@ CREATE TABLE agent_groups (
   name             TEXT NOT NULL,
   folder           TEXT NOT NULL UNIQUE,
   agent_provider   TEXT,
-  created_at       TEXT NOT NULL
+  created_at       TEXT NOT NULL,
+  parent_agent_group_id TEXT,
+  lifetime         TEXT NOT NULL DEFAULT 'persistent'
 );
 
 -- Platform groups/channels. unknown_sender_policy governs what happens

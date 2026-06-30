@@ -16,7 +16,7 @@
 import path from 'path';
 
 import { GROUPS_DIR, MAX_MANAGED_AGENTS } from '../../config.js';
-import { countLiveTaskAgents, createAgentGroup, getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
+import { countManagedAgents, createAgentGroup, getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
 import { getContainerConfig, updateContainerConfigScalars } from '../../db/container-configs.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
@@ -67,7 +67,7 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     return;
   }
 
-  if (countLiveTaskAgents() >= MAX_MANAGED_AGENTS) {
+  if (countManagedAgents() >= MAX_MANAGED_AGENTS) {
     notifyAgent(
       session,
       `create_agent rejected: fleet cap of ${MAX_MANAGED_AGENTS} managed agents reached. Reap finished agents (finish_task / delete_agent) before spawning more.`,

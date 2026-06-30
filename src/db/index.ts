@@ -7,7 +7,7 @@ export {
   getAllAgentGroups,
   updateAgentGroup,
   deleteAgentGroup,
-  countLiveTaskAgents,
+  countManagedAgents,
 } from './agent-groups.js';
 export {
   createMessagingGroup,
