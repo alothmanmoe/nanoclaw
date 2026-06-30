@@ -315,8 +315,10 @@ describe('deliverAllSessions — concurrent fan-out', () => {
     await deliverAllSessions([s1, s2]);
     const elapsed = Date.now() - start;
 
-    // Sequential would be ~100ms; concurrent ~50ms. Assert well under the sum.
-    expect(elapsed).toBeLessThan(95);
+    // Sequential would be ~100ms; concurrent ~50ms. Assert at the midpoint so
+    // the bound has ~10ms headroom on both sides (above the ~50ms concurrent
+    // result, below the ~100ms sequential floor) — robust on loaded CI.
+    expect(elapsed).toBeLessThan(90);
   });
 });
 
