@@ -15,13 +15,26 @@ this to single-host, single-event-loop coordination: sequential delivery/sweep
 loops, a default 5-container cap, no resource limits, and synchronous SQLite
 writes.
 
-Verifying the report against current code: two of its "easy wins" are **already
-implemented** and need only configuration (`MAX_CONCURRENT_CONTAINERS`,
-`CONTAINER_CPU_LIMIT`, `CONTAINER_MEMORY_LIMIT` all exist in `src/config.ts`).
-The SQLite `DELETE` journal-mode item is **rejected** — it is load-bearing for
-cross-mount correctness and will not be touched. The genuine remaining code work
-is parallelizing the delivery polls and making the loop intervals configurable.
-Plus the user wants measurement, surfaced through the dashboard.
+Verifying the report against current code:
+
+- `CONTAINER_CPU_LIMIT` / `CONTAINER_MEMORY_LIMIT` exist in `src/config.ts` and
+  are wired into `docker run` — configuration only.
+- **`MAX_CONCURRENT_CONTAINERS` is defined (`config.ts:40`) but NOT enforced.**
+  `getActiveContainerCount()` (`container-runner.ts:69`) is only consumed by
+  tests; `wakeContainer` (`container-runner.ts:88`) spawns a container for every
+  due session with no cap check. So the report's "agents beyond the 5th wait for
+  a slot" is false for current code — there is no slot gate, and setting the env
+  var changes nothing. The real parallel-load problem is the inverse: unbounded
+  spawning + (by default) no resource limits, so N containers fight over CPU/RAM
+  and every agent slows. **Decision (user-approved): add real enforcement** — a
+  capacity gate in `wakeContainer` that defers over-cap wakes to the existing
+  host-sweep retry path.
+- The SQLite `DELETE` journal-mode item is **rejected** — load-bearing for
+  cross-mount correctness, untouched.
+
+Remaining code work: enforce the concurrency cap, parallelize the delivery
+polls, make loop intervals configurable, and add measurement surfaced through
+the dashboard.
 
 ## Goals
 
@@ -46,7 +59,7 @@ The code already supports these; set values tuned to 18-core / 48 GB:
 
 | Var | Current default | New value | Rationale |
 |-----|-----------------|-----------|-----------|
-| `MAX_CONCURRENT_CONTAINERS` | 5 (`config.ts:40`) | `10` | Agents are mostly API-wait-bound; cores oversubscribe cleanly. Doubles slot ceiling. |
+| `MAX_CONCURRENT_CONTAINERS` | 5 (`config.ts:40`) | `10` | Now actually enforced (Workstream F). Agents are mostly API-wait-bound; cores oversubscribe cleanly. |
 | `CONTAINER_CPU_LIMIT` | `''` unbounded (`config.ts:44`) | `2` | Caps a single runaway agent at 2 vCPU; protects the other 9. |
 | `CONTAINER_MEMORY_LIMIT` | `''` unbounded (`config.ts:45`) | `4g` | 10 × 4g = 40g worst case, ~8g headroom for host + runtime. |
 
@@ -100,8 +113,13 @@ A single small helper emits one structured JSON log line per timing event
   delivery for that session. The number the user perceives as "lag."
 - **`poll_loop`** — duration of each `pollActive` / `pollSweep` tick and the
   number of sessions fanned out.
-- **`slot_wait`** — emitted when a due message cannot wake a container because
-  all `MAX_CONCURRENT_CONTAINERS` slots are busy, including how long it waited.
+- **`slot_wait`** — emitted by the capacity gate in `wakeContainer` (Workstream
+  F) when a wake is deferred because all `MAX_CONCURRENT_CONTAINERS` slots are
+  busy, with the current active count.
+
+`markWake` uses set-if-absent semantics so `wake_latency` measures the full
+perceived lag — from the first wake attempt (including any time queued behind
+the cap) through to first delivery — not just spawn time.
 
 Always-on, cheap, no new dependency. Lines land in `logs/nanoclaw.log`.
 
@@ -128,6 +146,29 @@ surfaces two ways:
 The `performance` aggregates are computed from an in-memory ring buffer the (C)
 helper maintains (last N events), so the pusher does no extra disk I/O.
 
+### F. Enforce the concurrency cap (backpressure)
+
+**File: `src/container-runner.ts`** — `wakeContainer` (`:88`).
+
+Add a capacity gate after the existing already-running and in-flight-wake
+dedup checks, before spawning:
+
+- If `activeContainers.size >= MAX_CONCURRENT_CONTAINERS` and the session is not
+  already running, emit `slot_wait` and return `Promise.resolve(false)` without
+  spawning. The inbound row stays pending; the host-sweep's existing due-message
+  retry path (`host-sweep.ts:209` → `wakeContainer`) re-attempts on its next
+  tick, so a deferred session starts within ~one sweep interval (20 s) of a slot
+  freeing. This reuses the exact mechanism already used for transient spawn
+  failures (`wakeContainer` contract: "never throws; returns false; inbound row
+  stays pending; host-sweep retries").
+- Call `markWake(session.id)` (set-if-absent) for any non-running session at the
+  top of `wakeContainer`, *before* the gate, so queue time is counted.
+
+**Behavior change:** under load above the cap, some agents queue up to ~20 s
+instead of all spawning at once. This is the intended backpressure — it trades a
+bounded startup delay for eliminating CPU/RAM oversubscription. `import` of
+`MAX_CONCURRENT_CONTAINERS` already exists or is added from `./config.js`.
+
 ### E. Vestigial file cleanup
 
 `git rm groups/global/CLAUDE.md groups/main/CLAUDE.md` — both are stock v1
@@ -145,7 +186,11 @@ defaults already removed from disk by `migrateGroupsToClaudeLocal()`
 - **Interval config:** unit test that env overrides are read and defaults hold
   when unset.
 - **Instrumentation:** unit test that the helper emits the expected `event`
-  shape and that the ring-buffer aggregates compute correctly.
+  shape, that `markWake` is set-if-absent (idempotent), and that the ring-buffer
+  aggregates compute correctly.
+- **Cap enforcement:** unit test that `wakeContainer` defers (returns `false`,
+  does not spawn) when `activeContainers.size >= MAX_CONCURRENT_CONTAINERS`, and
+  spawns normally below the cap.
 - **Dashboard:** the skill's shipped `dashboard-pusher.test.ts` and
   `dashboard-wiring.test.ts` (extended to cover the `performance` block), plus
   `pnpm run build` as the dependency guard.
@@ -174,6 +219,10 @@ Docker change), handed off as a checklist:
   check in (A).
 - **Dashboard package may not render `performance`:** mitigated — Logs page
   always shows the raw timing lines regardless.
+- **Cap backpressure adds startup latency under load:** above the cap, agents
+  queue up to ~one sweep interval (20 s). Intended tradeoff. Mitigated by tuning
+  `MAX_CONCURRENT_CONTAINERS` to the host (10) and watching `slot_wait`
+  frequency — if frequent, raise the cap (host has headroom) rather than revert.
 
 ## Commit
 
