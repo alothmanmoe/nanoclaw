@@ -128,6 +128,17 @@ One tier of agent self-modification today:
 
 A second tier (direct source-level self-edits via a draft/activate flow) is planned but not yet implemented.
 
+## Agent Fleet (`create_agent` / `delete_agent` / `finish_task`)
+
+Agents can spawn sub-agents without approval. Key facts:
+
+- **`create_agent`** — immediate, no approval for any `cli_scope`. Default `lifetime='task'`; pass `'persistent'` for companions that accumulate memory. Task agents count toward `MAX_MANAGED_AGENTS` (env-overridable, default 100); at cap the call is rejected (not queued).
+- **Ownership tree** — `agent_groups.parent_agent_group_id` records who spawned whom (NULL = operator-created root). Authorization for teardown is subtree-bounded: an agent may reap only itself or transitive descendants, never parents, siblings, or roots.
+- **`delete_agent(target)`** — reaps a descendant and its whole subtree (kills containers, cascade-deletes DB rows, removes OneCLI vault agent, deletes on-disk dirs, deepest-first).
+- **`finish_task(summary?)`** — a task agent calls this to self-terminate after reporting results to its parent. Relays optional `summary` to parent, then reaps caller's subtree. Root agents cannot call it.
+
+Key files: `container/agent-runner/src/mcp-tools/agents.ts`, `src/delivery.ts` (system action handlers), `src/db/agent-groups.ts` (`teardownSubtree`, `cascadeDeleteAgentGroup`, `descendantsOf`).
+
 ## Container Config
 
 Per-agent-group container runtime config (provider, model, packages, MCP servers, mounts, etc.) lives in the `container_configs` table in the central DB. Materialized to `groups/<folder>/container.json` at spawn time so the container runner can read it. Managed via `ncl groups config get/update` and the self-mod MCP tools.

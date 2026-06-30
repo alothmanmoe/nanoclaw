@@ -627,6 +627,59 @@ Modify a scheduled task.
 
 Implementation: cancel/pause/resume update the live row(s) directly. update_task is sent as a system action — the host reads current content, merges supplied fields, and writes back. All four match by `(id = ? OR series_id = ?) AND kind='task' AND status IN ('pending','paused')`, so they reach the live next occurrence of a recurring task even when the agent passes the original (now-completed) id.
 
+#### create_agent
+
+Spawn a new agent group, wire it as a bidirectional destination, and (optionally) set a lifetime. No approval required for any `cli_scope`.
+
+```typescript
+{
+  name: 'create_agent',
+  params: {
+    name: string,              // destination name for this agent
+    instructions: string,      // seeds the new agent's CLAUDE.local.md
+    lifetime?: 'task' | 'persistent',  // default 'task'
+  }
+}
+```
+
+- `lifetime: 'task'` (default) — counted toward `MAX_MANAGED_AGENTS` (default 100). At or over the cap, the call is rejected with an error; the agent must reap finished task agents first.
+- `lifetime: 'persistent'` — not counted toward the cap; stays until explicitly deleted.
+- Sets `parent_agent_group_id` on the new agent group to the calling session's agent group, establishing the ownership tree.
+- Implementation: writes a `messages_out` system action; host creates the `agent_groups` + `container_configs` rows, scaffolds the group directory, and wires bidirectional `agent_destinations`.
+
+#### delete_agent
+
+Tear down a descendant agent (and its whole subtree, deepest-first).
+
+```typescript
+{
+  name: 'delete_agent',
+  params: {
+    target: string,            // destination name or agent-group ID
+  }
+}
+```
+
+- Authorization is subtree-bounded: the caller may reap only itself or a transitive descendant. Attempting to reap a parent, sibling, unrelated agent, or a root group is refused.
+- Complete teardown: kills running container(s), cascade-deletes all DB rows (sessions, destinations, approvals, roles, memberships, wirings, container config), removes the OneCLI vault agent, and deletes `groups/<folder>/` and `data/v2-sessions/<id>/` on disk.
+
+#### finish_task
+
+A task agent calls this to self-terminate after reporting results to its parent.
+
+```typescript
+{
+  name: 'finish_task',
+  params: {
+    summary?: string,          // optional relay message to the parent
+  }
+}
+```
+
+- Relays `summary` to the parent agent group, then reaps the caller's subtree (same complete teardown as `delete_agent`).
+- Top-level (root) agents — those with `parent_agent_group_id IS NULL` — cannot call `finish_task`; the call is refused.
+- The agent should `send_message` its result to the parent **before** calling `finish_task`; the tool terminates the container.
+
 #### register_agent_group
 
 Register a new agent group (admin only).

@@ -14,14 +14,19 @@ Agent workspaces. Each maps 1:1 to a `groups/<folder>/` directory containing `CL
 
 ```sql
 CREATE TABLE agent_groups (
-  id               TEXT PRIMARY KEY,
-  name             TEXT NOT NULL,
-  folder           TEXT NOT NULL UNIQUE,
-  agent_provider   TEXT,
-  created_at       TEXT NOT NULL
+  id                    TEXT PRIMARY KEY,
+  name                  TEXT NOT NULL,
+  folder                TEXT NOT NULL UNIQUE,
+  agent_provider        TEXT,
+  created_at            TEXT NOT NULL,
+  parent_agent_group_id TEXT REFERENCES agent_groups(id),
+  lifetime              TEXT NOT NULL DEFAULT 'persistent'
 );
 ```
 
+- `parent_agent_group_id`: NULL for operator-created (root) groups; set to the creating agent's group ID for agent-spawned groups. Forms the ownership tree used for subtree-bounded teardown authorization.
+- `lifetime`: `'persistent'` (default; existing rows backfilled) or `'task'`. Task agents self-reap via `finish_task` and count toward the `MAX_MANAGED_AGENTS` fleet cap; persistent agents do not.
+- Added by migration `019-agent-fleet-ownership`.
 - **Readers:** `src/session-manager.ts`, `src/delivery.ts`, `src/router.ts`
 - **Writers:** `src/db/agent-groups.ts`
 
@@ -344,6 +349,7 @@ Migrations live in `src/db/migrations/`, one file per migration. Runner: `runMig
 | 009 | `009-drop-pending-credentials.ts` | Drop the defunct `pending_credentials` table |
 | 014 | `014-container-configs.ts` | `container_configs` — per-agent-group container runtime config |
 | 015 | `015-cli-scope.ts` | `ALTER TABLE container_configs ADD COLUMN cli_scope` |
+| 019 | `019-agent-fleet-ownership.ts` | `ALTER TABLE agent_groups ADD COLUMN parent_agent_group_id` + `lifetime`; backfills existing rows to `lifetime='persistent'` / `parent=NULL` |
 
 Numbers 005 and 006 are intentionally absent — migrations were renumbered during early development.
 
