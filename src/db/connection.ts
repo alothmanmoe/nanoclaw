@@ -20,7 +20,7 @@ export function initDb(dbPath: string): Database.Database {
   return _db;
 }
 
-/** For tests only — creates an in-memory DB and runs migrations. */
+/** For tests only — creates a bare in-memory DB (foreign_keys ON). Does NOT run migrations; callers are responsible for calling runMigrations(db) if needed. */
 export function initTestDb(): Database.Database {
   _db = new Database(':memory:');
   _db.pragma('foreign_keys = ON');

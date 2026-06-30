@@ -1,13 +1,25 @@
 import type { AgentGroup } from '../types.js';
 import { getDb } from './connection.js';
 
-export function createAgentGroup(group: AgentGroup): void {
+export function createAgentGroup(
+  group: AgentGroup,
+  opts?: { parentAgentGroupId?: string | null; lifetime?: 'task' | 'persistent' },
+): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at)
-       VALUES (@id, @name, @folder, @agent_provider, @created_at)`,
+      `INSERT INTO agent_groups
+         (id, name, folder, agent_provider, created_at, parent_agent_group_id, lifetime)
+       VALUES (@id, @name, @folder, @agent_provider, @created_at, @parent_agent_group_id, @lifetime)`,
     )
-    .run(group);
+    .run({
+      id: group.id,
+      name: group.name,
+      folder: group.folder,
+      agent_provider: group.agent_provider,
+      created_at: group.created_at,
+      parent_agent_group_id: opts?.parentAgentGroupId ?? group.parent_agent_group_id ?? null,
+      lifetime: opts?.lifetime ?? group.lifetime ?? 'persistent',
+    });
 }
 
 export function getAgentGroup(id: string): AgentGroup | undefined {

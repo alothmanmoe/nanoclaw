@@ -7,6 +7,10 @@ export interface AgentGroup {
   /** @deprecated Use container_configs.provider instead. */
   agent_provider: string | null;
   created_at: string;
+  /** Creator's agent-group id. NULL = tree root (operator-created). */
+  parent_agent_group_id?: string | null;
+  /** 'task' agents self-reap via finish_task; 'persistent' stay until reaped. */
+  lifetime?: 'task' | 'persistent';
 }
 
 /** Per-agent-group container runtime config. Source of truth in the DB;
