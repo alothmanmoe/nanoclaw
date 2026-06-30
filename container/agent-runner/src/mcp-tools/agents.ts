@@ -91,4 +91,28 @@ export const deleteAgent: McpToolDefinition = {
   },
 };
 
-registerTools([createAgent, deleteAgent]);
+export const finishTask: McpToolDefinition = {
+  tool: {
+    name: 'finish_task',
+    description:
+      "Declare your task complete and tear yourself down (and anything you spawned). Send your final result to your parent with send_message FIRST, then call this. Only for spawned task agents — a top-level agent cannot self-terminate.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        summary: { type: 'string', description: 'Optional one-line completion note relayed to your parent.' },
+      },
+    },
+  },
+  async handler(args) {
+    const requestId = generateId();
+    writeMessageOut({
+      id: requestId,
+      kind: 'system',
+      content: JSON.stringify({ action: 'finish_task', requestId, summary: (args.summary as string) || '' }),
+    });
+    log(`finish_task: ${requestId}`);
+    return ok('Finishing task and tearing down…');
+  },
+};
+
+registerTools([createAgent, deleteAgent, finishTask]);

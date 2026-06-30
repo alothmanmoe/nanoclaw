@@ -24,9 +24,11 @@ import { registerApprovalHandler } from '../approvals/index.js';
 import { A2A_MESSAGE_GATE_ACTION } from './agent-route.js';
 import { handleCreateAgent } from './create-agent.js';
 import { handleDeleteAgent } from './delete-agent.js';
+import { handleFinishTask } from './finish-task.js';
 import { applyA2aMessageGate } from './message-gate.js';
 
 registerDeliveryAction('create_agent', handleCreateAgent);
 registerDeliveryAction('delete_agent', handleDeleteAgent);
+registerDeliveryAction('finish_task', handleFinishTask);
 
 registerApprovalHandler(A2A_MESSAGE_GATE_ACTION, applyA2aMessageGate);
