@@ -3,11 +3,16 @@
 These steps disrupt running containers, so they were intentionally NOT run
 during implementation. Run them yourself once your agents are idle.
 
-1. **Raise Docker Desktop VM memory to ≥ 40 GB** (Docker Desktop → Settings →
-   Resources → Memory). Needed because `CONTAINER_MEMORY_LIMIT=4g` ×
-   `MAX_CONCURRENT_CONTAINERS=10` = 40 GB worst case. This requires a Docker
-   restart. If you prefer not to raise it that high, lower
-   `CONTAINER_MEMORY_LIMIT` to `3g` in `.env` instead.
+1. **Docker Desktop VM memory — confirm ≥ 24 GB** (Docker Desktop → Settings →
+   Resources → Memory; already set to 24 GB). Sizing: `CONTAINER_MEMORY_LIMIT=2g`
+   × `MAX_CONCURRENT_CONTAINERS=10` = 20 GB worst case, leaving ~4 GB VM
+   headroom. The cap is enforced as a HARD cap (synchronous slot reservation in
+   `wakeContainer`), so the 20 GB worst case cannot be overshot by concurrent
+   cross-channel arrivals. Note `2g` is a per-container ceiling — if memory-heavy
+   agents (browser/screenshot, large builds) hit OOM, either lower
+   `MAX_CONCURRENT_CONTAINERS` and raise `CONTAINER_MEMORY_LIMIT` (e.g. 5 × 4g),
+   or raise the Docker VM and `CONTAINER_MEMORY_LIMIT` together. Changing the VM
+   size requires a Docker restart.
 
 2. **Restart NanoClaw** to pick up the new `.env` values and the new build:
    `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`
