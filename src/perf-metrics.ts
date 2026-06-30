@@ -30,7 +30,7 @@ function push(e: PerfEvent): void {
 }
 
 export function recordEvent(event: string, fields: Record<string, number | string>): void {
-  push({ event, t: Date.now(), ...fields });
+  push({ ...fields, event, t: Date.now() });
   log.info('perf', { event, ...fields });
 }
 
@@ -38,6 +38,10 @@ export function markWake(sessionId: string): void {
   // set-if-absent: keep the earliest mark so wake_latency includes any time the
   // session spent queued behind the concurrency cap.
   if (!wakeMarks.has(sessionId)) wakeMarks.set(sessionId, Date.now());
+}
+
+export function clearWakeMark(sessionId: string): void {
+  wakeMarks.delete(sessionId);
 }
 
 export function markFirstDelivery(sessionId: string): void {
