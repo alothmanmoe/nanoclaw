@@ -21,6 +21,7 @@ import {
   migrateDeliveredTable,
 } from './db/session-db.js';
 import { ACTIVE_POLL_MS, SWEEP_POLL_MS } from './config.js';
+import { recordEvent, markFirstDelivery } from './perf-metrics.js';
 import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
@@ -125,8 +126,12 @@ export function startSweepDeliveryPoll(): void {
  * session's failure can't block the others (allSettled). Per-session re-entry
  * is still serialized by the inflightDeliveries guard in deliverSessionMessages.
  */
-export async function deliverAllSessions(sessions: Session[]): Promise<void> {
+export async function deliverAllSessions(sessions: Session[], kind = 'active'): Promise<void> {
+  const start = Date.now();
   await Promise.allSettled(sessions.map((s) => deliverSessionMessages(s)));
+  if (sessions.length > 0) {
+    recordEvent('poll_loop', { kind, sessions: sessions.length, ms: Date.now() - start });
+  }
 }
 
 async function pollActive(): Promise<void> {
@@ -134,7 +139,7 @@ async function pollActive(): Promise<void> {
 
   try {
     const sessions = getRunningSessions();
-    await deliverAllSessions(sessions);
+    await deliverAllSessions(sessions, 'active');
   } catch (err) {
     log.error('Active delivery poll error', { err });
   }
@@ -147,7 +152,7 @@ async function pollSweep(): Promise<void> {
 
   try {
     const sessions = getActiveSessions();
-    await deliverAllSessions(sessions);
+    await deliverAllSessions(sessions, 'sweep');
   } catch (err) {
     log.error('Sweep delivery poll error', { err });
   }
@@ -198,6 +203,7 @@ async function drainSession(session: Session): Promise<void> {
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
         markDelivered(inDb, msg.id, platformMsgId ?? null);
+        markFirstDelivery(session.id); // no-op unless a wake is pending; self-clears
         deliveryAttempts.delete(msg.id);
 
         // Pause the typing indicator after a real user-facing message
