@@ -21,6 +21,7 @@ import { getDb } from './db/connection.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
 import { readEnvFile } from './env.js';
+import { getAggregates } from './perf-metrics.js';
 
 interface PusherConfig {
   port: number;
@@ -160,6 +161,7 @@ function collectSnapshot(): Record<string, unknown> {
     context_windows: collectContextWindows(),
     activity: collectActivity(),
     messages: collectMessages(),
+    performance: getAggregates(),
   };
 }
 

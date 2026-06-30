@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
+import { recordEvent, __resetForTest } from './perf-metrics.js';
 
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
@@ -122,6 +123,27 @@ describe('add-dashboard integration point (startDashboard)', () => {
     ]) {
       expect(ingest.body).toHaveProperty(key);
     }
+
+    await dash.close();
+  });
+
+  it('includes a performance block in the snapshot', async () => {
+    __resetForTest();
+    recordEvent('poll_loop', { kind: 'active', sessions: 2, ms: 9 });
+
+    const dash = await startFakeDashboard();
+    process.env.DASHBOARD_SECRET = 'test-secret';
+    process.env.DASHBOARD_PORT = String(dash.port);
+
+    await startDashboard();
+
+    await waitFor(() => dash.posts.some((p) => p.path === '/api/ingest'));
+
+    const ingest = dash.posts.find((p) => p.path === '/api/ingest')!;
+    const perf = ingest.body.performance as Record<string, unknown>;
+    expect(perf).toBeDefined();
+    expect((perf.pollLoops as unknown[]).length).toBeGreaterThan(0);
+    expect(perf.wakeLatencyMs).toHaveProperty('count');
 
     await dash.close();
   });
