@@ -44,7 +44,8 @@ afterEach(() => {
 describe('teardownSubtree', () => {
   it('deletes target and all descendants, leaves bystander', async () => {
     const res = await teardownSubtree(getDb(), 'child');
-    expect(res.reaped.sort()).toEqual(['child', 'grandchild']);
+    expect(res.reaped).toEqual(['grandchild', 'child']);
+    expect(vaultDeletes).toEqual(['grandchild', 'child']);
     expect(getAgentGroup('child')).toBeUndefined();
     expect(getAgentGroup('grandchild')).toBeUndefined();
     expect(getAgentGroup('bystander')).toBeDefined();
