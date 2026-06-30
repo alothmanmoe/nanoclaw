@@ -68,4 +68,27 @@ export const createAgent: McpToolDefinition = {
   },
 };
 
-registerTools([createAgent]);
+export const deleteAgent: McpToolDefinition = {
+  tool: {
+    name: 'delete_agent',
+    description:
+      'Tear down a sub-agent you created (and everything it spawned). You may only delete agents in your own subtree — never a parent, sibling, or unrelated agent. Use the destination name you gave the agent.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        target: { type: 'string', description: 'Destination name (or agent-group id) of the agent to reap.' },
+      },
+      required: ['target'],
+    },
+  },
+  async handler(args) {
+    const target = args.target as string;
+    if (!target) return err('target is required');
+    const requestId = generateId();
+    writeMessageOut({ id: requestId, kind: 'system', content: JSON.stringify({ action: 'delete_agent', requestId, target }) });
+    log(`delete_agent: ${requestId} → "${target}"`);
+    return ok(`Tearing down "${target}"…`);
+  },
+};
+
+registerTools([createAgent, deleteAgent]);
