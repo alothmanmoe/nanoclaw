@@ -35,12 +35,13 @@ export const createAgent: McpToolDefinition = {
   tool: {
     name: 'create_agent',
     description:
-      'Create a long-lived companion sub-agent (research assistant, task manager, specialist) — the name becomes your destination for it. May require admin approval before the agent is created. Fire-and-forget.',
+      'Create a sub-agent (research assistant, task manager, specialist) — the name becomes your destination for it. Fire-and-forget.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Human-readable name (also becomes your destination name for this agent)' },
         instructions: { type: 'string', description: 'CLAUDE.md content for the new agent (personality, role, instructions)' },
+        lifetime: { type: 'string', enum: ['task', 'persistent'], description: "'task' (default) self-reaps via finish_task when done; 'persistent' stays until you delete_agent it." },
       },
       required: ['name'],
     },
@@ -58,6 +59,7 @@ export const createAgent: McpToolDefinition = {
         requestId,
         name,
         instructions: (args.instructions as string) || null,
+        lifetime: (args.lifetime as string) === 'persistent' ? 'persistent' : 'task',
       }),
     });
 

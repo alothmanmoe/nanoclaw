@@ -1,17 +1,18 @@
 /**
- * Tests for create_agent host-side authorization.
+ * Tests for create_agent host-side behavior.
  *
- * Regression guard for the audit finding: `create_agent` is a privileged
- * central-DB write with no host-side authz. The fix authorizes by CLI scope —
- * trusted owner agent groups ('global') create directly; confined groups
- * ('group', the default and the prompt-injection victim) must get admin
- * approval. These tests pin that branch decision.
+ * Spawning no longer requires approval. Any agent may create sub-agents
+ * directly, subject to the fleet cap (MAX_MANAGED_AGENTS). These tests pin:
+ *   - always creates directly, never requests approval
+ *   - records parent + lifetime on every create
+ *   - fleet cap rejects without creating
+ *   - provider inheritance is unchanged
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '../../types.js';
 
-// Mocks for the collaborators the branch decides between / depends on.
+// Mocks for collaborators.
 const mockRequestApproval = vi.fn().mockResolvedValue(undefined);
 const mockGetContainerConfig = vi.fn();
 const mockCreateAgentGroup = vi.fn();
@@ -19,6 +20,7 @@ const mockInitGroupFilesystem = vi.fn();
 const mockUpdateScalars = vi.fn();
 const mockWriteDestinations = vi.fn();
 const mockNotifyWrite = vi.fn();
+const mockCountLiveTaskAgents = vi.fn(() => 0);
 
 vi.mock('../approvals/index.js', () => ({
   requestApproval: (...a: unknown[]) => mockRequestApproval(...a),
@@ -32,6 +34,7 @@ vi.mock('../../db/agent-groups.js', () => ({
   getAgentGroup: (id: string) => ({ id, name: id.toUpperCase(), folder: id, agent_provider: null, created_at: '' }),
   getAgentGroupByFolder: () => undefined,
   createAgentGroup: (...a: unknown[]) => mockCreateAgentGroup(...a),
+  countLiveTaskAgents: () => mockCountLiveTaskAgents(),
 }));
 vi.mock('../../group-init.js', () => ({
   initGroupFilesystem: (...a: unknown[]) => mockInitGroupFilesystem(...a),
@@ -61,13 +64,14 @@ const SESSION = { id: 'sess-1', agent_group_id: 'ag-1' } as Session;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockCountLiveTaskAgents.mockReturnValue(0);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('handleCreateAgent — scope-based authorization', () => {
+describe('handleCreateAgent — no approval gate', () => {
   it('global scope: creates directly, no approval requested', async () => {
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
 
@@ -78,10 +82,43 @@ describe('handleCreateAgent — scope-based authorization', () => {
     expect(mockInitGroupFilesystem).toHaveBeenCalledTimes(1);
   });
 
+  it('group scope (default): creates directly, does NOT request approval', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+
+    await handleCreateAgent({ name: 'Scout', instructions: 'help' }, SESSION);
+
+    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('missing config: creates directly, no approval', async () => {
+    mockGetContainerConfig.mockReturnValue(undefined);
+
+    await handleCreateAgent({ name: 'Scout' }, SESSION);
+
+    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('disabled/other scope: creates directly, no approval', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'disabled' });
+
+    await handleCreateAgent({ name: 'Scout' }, SESSION);
+
+    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty name: neither creates nor requests approval', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+
+    await handleCreateAgent({ name: '' }, SESSION);
+
+    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+  });
+
   it('child inherits the creator provider (codex parent → codex child)', async () => {
-    // A subagent must run on the same authenticated runtime as its creator —
-    // on a codex-only install a claude default would 401. Red-on-delete:
-    // dropping the inheritance leaves the child provider-less (→ claude).
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'global', provider: 'codex' });
 
     await handleCreateAgent({ name: 'Scout', instructions: 'help' }, SESSION);
@@ -101,41 +138,41 @@ describe('handleCreateAgent — scope-based authorization', () => {
     expect(mockUpdateScalars).not.toHaveBeenCalled();
   });
 
-  it('group scope (default): requires approval, does NOT create directly', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
-
-    await handleCreateAgent({ name: 'Scout', instructions: 'help' }, SESSION);
-
-    expect(mockRequestApproval).toHaveBeenCalledTimes(1);
-    expect(mockRequestApproval.mock.calls[0][0]).toMatchObject({ action: 'create_agent' });
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-    expect(mockInitGroupFilesystem).not.toHaveBeenCalled();
-  });
-
-  it('missing config: fails closed to approval (no direct create)', async () => {
-    mockGetContainerConfig.mockReturnValue(undefined);
-
-    await handleCreateAgent({ name: 'Scout' }, SESSION);
-
-    expect(mockRequestApproval).toHaveBeenCalledTimes(1);
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-  });
-
-  it('disabled/other scope: requires approval', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'disabled' });
-
-    await handleCreateAgent({ name: 'Scout' }, SESSION);
-
-    expect(mockRequestApproval).toHaveBeenCalledTimes(1);
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-  });
-
-  it('empty name: neither creates nor requests approval', async () => {
+  it('records parent and default lifetime task', async () => {
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
 
-    await handleCreateAgent({ name: '' }, SESSION);
+    await handleCreateAgent({ name: 'Scout' }, SESSION);
 
-    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ parentAgentGroupId: 'ag-1', lifetime: 'task' }),
+    );
+  });
+
+  it('lifetime persistent when requested', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+
+    await handleCreateAgent({ name: 'Scout', lifetime: 'persistent' }, SESSION);
+
+    expect(mockCreateAgentGroup).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ lifetime: 'persistent' }),
+    );
+  });
+
+  it('fleet cap: rejects without creating', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    mockCountLiveTaskAgents.mockReturnValue(100);
+
+    await handleCreateAgent({ name: 'Scout' }, SESSION);
+
     expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+    expect(mockNotifyWrite).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        content: expect.stringContaining('fleet cap'),
+      }),
+    );
   });
 });

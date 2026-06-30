@@ -6,16 +6,17 @@
  * a privileged operation a confined container is otherwise architecturally
  * barred from. The container's MCP tool gate is inside the (untrusted)
  * container and is trivially bypassed by writing the outbound system row
- * directly, so authorization MUST be enforced host-side. Trusted owner agent
- * groups (CLI scope 'global') create directly; every other (confined) group
- * requires admin approval via `requestApproval` — matching `ncl groups create`
- * (access: 'approval') and the self-mod actions. `applyCreateAgent` runs the
- * creation on approve; `performCreateAgent` is the shared body.
+ * directly, so authorization MUST be enforced host-side.
+ *
+ * Spawning no longer requires approval. Any agent that can reach this action
+ * may create sub-agents directly, subject to the fleet cap
+ * (MAX_MANAGED_AGENTS). Parent + lifetime are recorded on every create so
+ * finish_task / delete_agent can clean up correctly.
  */
 import path from 'path';
 
-import { GROUPS_DIR } from '../../config.js';
-import { createAgentGroup, getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
+import { GROUPS_DIR, MAX_MANAGED_AGENTS } from '../../config.js';
+import { countLiveTaskAgents, createAgentGroup, getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
 import { getContainerConfig, updateContainerConfigScalars } from '../../db/container-configs.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
@@ -23,7 +24,6 @@ import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { AgentGroup, Session } from '../../types.js';
-import { requestApproval, type ApprovalHandler } from '../approvals/index.js';
 import { createDestination, getDestinationByName, normalizeName } from './db/agent-destinations.js';
 import { writeDestinations } from './write-destinations.js';
 
@@ -46,19 +46,14 @@ function notifyAgent(session: Session, text: string): void {
 /**
  * Delivery-action entry.
  *
- * Authorization depends on the calling group's CLI scope:
- *   - `global` (set by init-first-agent for trusted owner agent groups):
- *     create immediately. create_agent is the intended primitive for these
- *     privileged agents, and an approval tap on every sub-agent spawn would be
- *     needless friction.
- *   - anything else (the default `group` scope — the realistic
- *     prompt-injection victim): require an admin to approve before any
- *     central-DB write. `applyCreateAgent` runs on approve.
- * Unknown/missing config fails closed to the approval path.
+ * Always creates directly — no approval gate. The fleet cap
+ * (MAX_MANAGED_AGENTS) is enforced before any DB write. Parent + lifetime are
+ * recorded so finish_task / delete_agent can clean up the fleet.
  */
 export async function handleCreateAgent(content: Record<string, unknown>, session: Session): Promise<void> {
   const name = typeof content.name === 'string' ? content.name : '';
   const instructions = typeof content.instructions === 'string' ? content.instructions : null;
+  const lifetime: 'task' | 'persistent' = content.lifetime === 'persistent' ? 'persistent' : 'task';
 
   if (!name) {
     notifyAgent(session, 'create_agent failed: name is required.');
@@ -72,57 +67,26 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     return;
   }
 
-  const cliScope = getContainerConfig(session.agent_group_id)?.cli_scope ?? 'group';
-  if (cliScope === 'global') {
-    // Trusted owner agent group — create directly, then notify (+wake) it.
-    await performCreateAgent(name, instructions, session, sourceGroup, (text) => notifyAgent(session, text));
+  if (countLiveTaskAgents() >= MAX_MANAGED_AGENTS) {
+    notifyAgent(
+      session,
+      `create_agent rejected: fleet cap of ${MAX_MANAGED_AGENTS} managed agents reached. Reap finished agents (finish_task / delete_agent) before spawning more.`,
+    );
     return;
   }
 
-  await requestApproval({
-    session,
-    agentName: sourceGroup.name,
-    action: 'create_agent',
-    payload: { name, instructions },
-    title: `Create agent: ${name}`,
-    question: `Agent "${sourceGroup.name}" wants to create a new sub-agent "${name}" (a new agent group with its own workspace and container). Approve?`,
-  });
+  await performCreateAgent(name, instructions, lifetime, session, sourceGroup, (text) => notifyAgent(session, text));
 }
 
 /**
- * Approval handler: performs the creation once an admin approves a request from
- * a confined (non-global) agent group. `session` is the requesting parent.
- */
-export const applyCreateAgent: ApprovalHandler = async ({ session, payload, notify }) => {
-  const name = typeof payload.name === 'string' ? payload.name : '';
-  const instructions = typeof payload.instructions === 'string' ? payload.instructions : null;
-
-  if (!name) {
-    notify('create_agent approved but the request had no name.');
-    return;
-  }
-
-  const sourceGroup = getAgentGroup(session.agent_group_id);
-  if (!sourceGroup) {
-    notify('create_agent approved but the source agent group no longer exists.');
-    log.warn('create_agent apply failed: missing source group', { sessionAgentGroup: session.agent_group_id, name });
-    return;
-  }
-
-  await performCreateAgent(name, instructions, session, sourceGroup, notify);
-};
-
-/**
  * Core creation: writes the new agent group + bidirectional destinations and
- * scaffolds its filesystem, then reports via `notify`. Authorization is the
- * CALLER's responsibility (the global-scope shortcut in handleCreateAgent or
- * admin approval via applyCreateAgent) — never call this from an unauthorized
- * path, as it performs privileged central-DB writes a confined container is
- * otherwise barred from.
+ * scaffolds its filesystem, then reports via `notify`. Records the parent
+ * agent group id and lifetime so the fleet can be managed.
  */
 async function performCreateAgent(
   name: string,
   instructions: string | null,
+  lifetime: 'task' | 'persistent',
   session: Session,
   sourceGroup: AgentGroup,
   notify: (text: string) => void,
@@ -162,7 +126,7 @@ async function performCreateAgent(
     agent_provider: null,
     created_at: now,
   };
-  createAgentGroup(newGroup);
+  createAgentGroup(newGroup, { parentAgentGroupId: sourceGroup.id, lifetime });
   // A subagent inherits its creator's provider. Provider is a DB property; the
   // child is created provider-agnostic, then stamped with the parent's runtime
   // so a single-provider install (e.g. codex-only, where claude isn't
@@ -207,5 +171,5 @@ async function performCreateAgent(
   writeDestinations(session.agent_group_id, session.id);
 
   notify(`Agent "${localName}" created. You can now message it with <message to="${localName}">...</message>.`);
-  log.info('Agent group created', { agentGroupId, name, localName, folder, parent: sourceGroup.id });
+  log.info('Agent group created', { agentGroupId, name, localName, folder, parent: sourceGroup.id, lifetime });
 }

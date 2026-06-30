@@ -54,3 +54,9 @@ export function updateAgentGroup(id: string, updates: Partial<Pick<AgentGroup, '
 export function deleteAgentGroup(id: string): void {
   getDb().prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
 }
+
+/** Count of live agent groups with lifetime='task' — the fleet-cap denominator. */
+export function countLiveTaskAgents(): number {
+  const row = getDb().prepare("SELECT COUNT(*) AS n FROM agent_groups WHERE lifetime = 'task'").get() as { n: number };
+  return row.n;
+}
