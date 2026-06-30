@@ -1,8 +1,19 @@
 import fs from 'fs';
 import path from 'path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveProviderName } from './container-runner.js';
+// Mock the agent-group lookup so spawnContainer (if ever reached) early-returns
+// at its `if (!agentGroup)` guard BEFORE touching Docker/OneCLI. This keeps the
+// capacity-gate tests below from ever launching a real container, in both the
+// gate-present and gate-absent states.
+vi.mock('./db/agent-groups.js', () => ({
+  getAgentGroup: vi.fn(() => null),
+}));
+
+import { __setActiveForTest, resolveProviderName, wakeContainer } from './container-runner.js';
+import { MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { getAgentGroup } from './db/agent-groups.js';
+import type { Session } from './types.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -25,6 +36,49 @@ describe('resolveProviderName', () => {
   it('treats empty string as unset (falls through)', () => {
     expect(resolveProviderName('', 'opencode')).toBe('opencode');
     expect(resolveProviderName(null, '')).toBe('claude');
+  });
+});
+
+function makeSession(id: string): Session {
+  return {
+    id,
+    agent_group_id: 'ag-test',
+    messaging_group_id: null,
+    thread_id: null,
+    agent_provider: null,
+    status: 'active',
+    container_status: 'stopped',
+    last_active: null,
+    created_at: new Date().toISOString(),
+  };
+}
+
+describe('wakeContainer capacity gate', () => {
+  afterEach(() => {
+    // Reset the active-container map so seeded state doesn't leak between tests.
+    __setActiveForTest([]);
+    vi.mocked(getAgentGroup).mockClear();
+  });
+
+  it('defers (returns false, no spawn) when at MAX_CONCURRENT_CONTAINERS', async () => {
+    // Seed the active map to the cap. The gate must return before spawnContainer,
+    // so getAgentGroup (spawnContainer's first call) is never consulted — proving
+    // no spawn was attempted.
+    __setActiveForTest(Array.from({ length: MAX_CONCURRENT_CONTAINERS }, (_, i) => `running-${i}`));
+    const spawned = await wakeContainer(makeSession('sess-overflow'));
+    expect(spawned).toBe(false);
+    expect(getAgentGroup).not.toHaveBeenCalled();
+  });
+
+  it('passes the gate when below the cap', async () => {
+    // Below the cap: the gate is not hit, so wakeContainer proceeds into
+    // spawnContainer, which consults getAgentGroup (mocked → null) and
+    // early-returns before any Docker/OneCLI call. wakeContainer still resolves
+    // true, proving the gate let it through.
+    __setActiveForTest([]);
+    const spawned = await wakeContainer(makeSession('sess-ok'));
+    expect(spawned).toBe(true);
+    expect(getAgentGroup).toHaveBeenCalled();
   });
 });
 

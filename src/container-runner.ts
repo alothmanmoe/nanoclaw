@@ -17,6 +17,7 @@ import {
   CONTAINER_MEMORY_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
+  MAX_CONCURRENT_CONTAINERS,
   ONECLI_API_KEY,
   ONECLI_URL,
   TIMEZONE,
@@ -32,6 +33,7 @@ import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
+import { markWake, recordEvent } from './perf-metrics.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
@@ -70,6 +72,12 @@ export function getActiveContainerCount(): number {
   return activeContainers.size;
 }
 
+/** Test-only: seed the active-container map to simulate N running containers. */
+export function __setActiveForTest(ids: string[]): void {
+  activeContainers.clear();
+  for (const id of ids) activeContainers.set(id, { process: null as never, containerName: id });
+}
+
 export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }
@@ -91,11 +99,28 @@ export function wakeContainer(session: Session): Promise<boolean> {
     log.debug('Container already running', { sessionId: session.id });
     return Promise.resolve(true);
   }
+  // Mark the wake start (set-if-absent) so wake_latency includes queue time.
+  markWake(session.id);
+
   const existing = wakePromises.get(session.id);
   if (existing) {
     log.debug('Container wake already in-flight — joining existing promise', { sessionId: session.id });
     return existing;
   }
+
+  // Capacity gate: at the cap, defer. The inbound row stays pending and
+  // host-sweep re-wakes on its next tick (same path as a transient spawn
+  // failure). This is the system's backpressure — no new queue is introduced.
+  if (activeContainers.size >= MAX_CONCURRENT_CONTAINERS) {
+    recordEvent('slot_wait', { sessionId: session.id, active: activeContainers.size });
+    log.debug('At container capacity — deferring wake', {
+      sessionId: session.id,
+      active: activeContainers.size,
+      cap: MAX_CONCURRENT_CONTAINERS,
+    });
+    return Promise.resolve(false);
+  }
+
   const promise = spawnContainer(session)
     .then(() => true)
     .catch((err) => {
