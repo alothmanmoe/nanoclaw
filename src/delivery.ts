@@ -120,14 +120,21 @@ export function startSweepDeliveryPoll(): void {
   pollSweep();
 }
 
+/**
+ * Deliver every session's outbound queue concurrently. Never rejects — one
+ * session's failure can't block the others (allSettled). Per-session re-entry
+ * is still serialized by the inflightDeliveries guard in deliverSessionMessages.
+ */
+export async function deliverAllSessions(sessions: Session[]): Promise<void> {
+  await Promise.allSettled(sessions.map((s) => deliverSessionMessages(s)));
+}
+
 async function pollActive(): Promise<void> {
   if (!activePolling) return;
 
   try {
     const sessions = getRunningSessions();
-    for (const session of sessions) {
-      await deliverSessionMessages(session);
-    }
+    await deliverAllSessions(sessions);
   } catch (err) {
     log.error('Active delivery poll error', { err });
   }
@@ -140,9 +147,7 @@ async function pollSweep(): Promise<void> {
 
   try {
     const sessions = getActiveSessions();
-    for (const session of sessions) {
-      await deliverSessionMessages(session);
-    }
+    await deliverAllSessions(sessions);
   } catch (err) {
     log.error('Sweep delivery poll error', { err });
   }

@@ -36,7 +36,8 @@ import {
 } from './db/index.js';
 import { getDeliveredIds } from './db/session-db.js';
 import { resolveSession, outboundDbPath, openInboundDb } from './session-manager.js';
-import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
+import type { Session } from './types.js';
+import { deliverSessionMessages, setDeliveryAdapter, deliverAllSessions } from './delivery.js';
 
 function now(): string {
   return new Date().toISOString();
@@ -287,6 +288,35 @@ describe('deliverSessionMessages — instance resolution', () => {
 
     await deliverSessionMessages(session);
     expect(instances).toEqual(['telegram']);
+  });
+});
+
+function seedSessionWithMessage(threadId: string): Session {
+  // ag-1 and mg-1 are seeded by seedAgentAndChannel() in the calling test.
+  const { session } = resolveSession('ag-1', 'mg-1', threadId, 'per-thread');
+  insertOutbound('ag-1', session.id, `out-${threadId}`);
+  return session;
+}
+
+describe('deliverAllSessions — concurrent fan-out', () => {
+  it('delivers sessions concurrently, not sequentially', async () => {
+    seedAgentAndChannel();
+    const s1 = seedSessionWithMessage('thread-a');
+    const s2 = seedSessionWithMessage('thread-b');
+
+    setDeliveryAdapter({
+      deliver: async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        return 'mid-1';
+      },
+    });
+
+    const start = Date.now();
+    await deliverAllSessions([s1, s2]);
+    const elapsed = Date.now() - start;
+
+    // Sequential would be ~100ms; concurrent ~50ms. Assert well under the sum.
+    expect(elapsed).toBeLessThan(85);
   });
 });
 
