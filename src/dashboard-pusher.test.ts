@@ -91,6 +91,7 @@ describe('add-dashboard integration point (startDashboard)', () => {
     delete process.env.DASHBOARD_SECRET;
     delete process.env.DASHBOARD_PORT;
     if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+    __resetForTest();
   });
 
   it('posts a snapshot of the seeded state when DASHBOARD_SECRET is set', async () => {
