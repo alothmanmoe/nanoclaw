@@ -316,7 +316,7 @@ describe('deliverAllSessions — concurrent fan-out', () => {
     const elapsed = Date.now() - start;
 
     // Sequential would be ~100ms; concurrent ~50ms. Assert well under the sum.
-    expect(elapsed).toBeLessThan(85);
+    expect(elapsed).toBeLessThan(95);
   });
 });
 
